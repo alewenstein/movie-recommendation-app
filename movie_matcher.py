@@ -23,14 +23,21 @@ def load_data():
     
     return df, unique_movies, voter_movie_matrix
 
-def calculate_similarity(user_picks: Dict[str, int], voter_picks: pd.Series) -> float:
+def calculate_similarity(user_picks: Dict[str, int], voter_picks: pd.Series, unique_movies: List[str]) -> float:
     """
     Calculate similarity between user's picks and a voter's picks.
     Uses a weighted similarity score that considers both overlap and ranking differences.
+    Only considers movies that exist in the dataset.
     """
+    # Filter user picks to only include movies that exist in the dataset
+    valid_user_picks = {movie: rank for movie, rank in user_picks.items() if movie in unique_movies}
+    
+    if not valid_user_picks:
+        return 0.0
+    
     # Find common movies
     common_movies = []
-    for movie, user_rank in user_picks.items():
+    for movie, user_rank in valid_user_picks.items():
         if movie in voter_picks.index and voter_picks[movie] > 0:
             common_movies.append(movie)
     
@@ -42,7 +49,7 @@ def calculate_similarity(user_picks: Dict[str, int], voter_picks: pd.Series) -> 
     max_possible_score = 0
     
     for movie in common_movies:
-        user_rank = user_picks[movie]
+        user_rank = valid_user_picks[movie]
         voter_rank = voter_picks[movie]
         
         # Inverse weight: higher ranked movies (lower numbers) get more weight
@@ -55,26 +62,26 @@ def calculate_similarity(user_picks: Dict[str, int], voter_picks: pd.Series) -> 
         total_score += score
         max_possible_score += weight
     
-    # Normalize by number of common movies and maximum possible score
+    # Normalize by number of valid user picks and maximum possible score
     if max_possible_score > 0:
-        similarity = (total_score / max_possible_score) * (len(common_movies) / 10)
+        similarity = (total_score / max_possible_score) * (len(common_movies) / len(valid_user_picks))
     else:
         similarity = 0
     
     return similarity
 
-def find_similar_voters(user_picks: Dict[str, int], voter_movie_matrix: pd.DataFrame, top_n: int = 10) -> List[Tuple[str, float, List[str]]]:
+def find_similar_voters(user_picks: Dict[str, int], voter_movie_matrix: pd.DataFrame, unique_movies: List[str], top_n: int = 10) -> List[Tuple[str, float, List[str]]]:
     """Find the most similar voters based on movie preferences."""
     similarities = []
     
     for voter in voter_movie_matrix.index:
         voter_picks = voter_movie_matrix.loc[voter]
-        similarity = calculate_similarity(user_picks, voter_picks)
+        similarity = calculate_similarity(user_picks, voter_picks, unique_movies)
         
-        # Get common movies between user and voter
+        # Get common movies between user and voter (only valid movies)
         common_movies = []
         for movie, user_rank in user_picks.items():
-            if movie in voter_picks.index and voter_picks[movie] > 0:
+            if movie in unique_movies and movie in voter_picks.index and voter_picks[movie] > 0:
                 common_movies.append(movie)
         
         similarities.append((voter, similarity, common_movies))
@@ -109,16 +116,47 @@ with col1:
     available_movies = [m for m in unique_movies if m not in st.session_state.selected_movies]
     
     if len(st.session_state.selected_movies) < 10:
-        selected_movie = st.selectbox(
-            f"Select movie #{len(st.session_state.selected_movies) + 1}:",
-            [""] + available_movies,
-            key=f"movie_select_{len(st.session_state.selected_movies)}"
-        )
+        # Tab selection for input method
+        tab1, tab2 = st.tabs(["Select from List", "Enter Custom Movie"])
         
-        if selected_movie and selected_movie != "":
-            if st.button("Add Movie", key="add_movie"):
-                st.session_state.selected_movies.append(selected_movie)
-                st.rerun()
+        with tab1:
+            selected_movie = st.selectbox(
+                f"Select movie #{len(st.session_state.selected_movies) + 1}:",
+                [""] + available_movies,
+                key=f"movie_select_{len(st.session_state.selected_movies)}"
+            )
+            
+            if selected_movie and selected_movie != "":
+                if st.button("Add Movie from List", key="add_movie_list"):
+                    st.session_state.selected_movies.append(selected_movie)
+                    st.rerun()
+        
+        with tab2:
+            custom_movie = st.text_input(
+                f"Enter custom movie #{len(st.session_state.selected_movies) + 1}:",
+                key=f"custom_movie_{len(st.session_state.selected_movies)}"
+            )
+            
+            if custom_movie:
+                # Check if movie already selected
+                if custom_movie in st.session_state.selected_movies:
+                    st.warning("This movie is already in your list!")
+                elif custom_movie.lower() in [m.lower() for m in st.session_state.selected_movies]:
+                    st.warning("This movie (or a very similar one) is already in your list!")
+                else:
+                    # Check if movie exists in dataset
+                    movie_in_dataset = custom_movie in unique_movies
+                    if not movie_in_dataset:
+                        # Check for close matches (case-insensitive)
+                        close_matches = [m for m in unique_movies if custom_movie.lower() in m.lower() or m.lower() in custom_movie.lower()]
+                        if close_matches:
+                            st.info(f"Movie not found in dataset. Did you mean one of these?\n{', '.join(close_matches[:3])}")
+                        else:
+                            st.warning("⚠️ This movie is not in the NYT dataset. It will be ignored in similarity calculations.")
+                    
+                    if st.button("Add Custom Movie", key="add_movie_custom"):
+                        st.session_state.selected_movies.append(custom_movie)
+                        st.rerun()
     
     # Display selected movies with option to remove
     if st.session_state.selected_movies:
@@ -147,43 +185,55 @@ with col2:
         # Create user picks dictionary
         user_picks = {movie: rank+1 for rank, movie in enumerate(st.session_state.selected_movies)}
         
-        # Find similar voters
-        similar_voters = find_similar_voters(user_picks, voter_movie_matrix, top_n=20)
+        # Show info about invalid movies
+        invalid_movies = [movie for movie in user_picks.keys() if movie not in unique_movies]
+        valid_movies = [movie for movie in user_picks.keys() if movie in unique_movies]
         
-        st.markdown("### Most Similar Reviewers:")
+        if invalid_movies:
+            st.warning(f"⚠️ {len(invalid_movies)} movie(s) not in dataset and will be ignored: {', '.join(invalid_movies)}")
         
-        for i, (voter, similarity, common_movies) in enumerate(similar_voters):
-            if similarity > 0:  # Only show voters with some similarity
-                with st.expander(f"{i+1}. **{voter}** - Similarity: {similarity:.2%}"):
-                    st.write(f"**Movies in common:** {len(common_movies)}")
-                    
-                    # Show which movies matched and their rankings
-                    if common_movies:
-                        match_df = []
-                        for movie in common_movies:
-                            user_rank = user_picks[movie]
-                            voter_rank = int(voter_movie_matrix.loc[voter, movie])
-                            match_df.append({
-                                'Movie': movie,
-                                'Your Rank': user_rank,
-                                'Their Rank': voter_rank,
-                                'Difference': abs(user_rank - voter_rank)
-                            })
+        if len(valid_movies) == 0:
+            st.error("None of your selected movies are in the dataset. Please select movies from the list or try different custom entries.")
+        else:
+            st.info(f"Using {len(valid_movies)} valid movies for matching.")
+            
+            # Find similar voters
+            similar_voters = find_similar_voters(user_picks, voter_movie_matrix, unique_movies, top_n=20)
+            
+            st.markdown("### Most Similar Reviewers:")
+            
+            for i, (voter, similarity, common_movies) in enumerate(similar_voters):
+                if similarity > 0:  # Only show voters with some similarity
+                    with st.expander(f"{i+1}. **{voter}** - Similarity: {similarity:.2%}"):
+                        st.write(f"**Movies in common:** {len(common_movies)}")
                         
-                        match_df = pd.DataFrame(match_df)
-                        match_df = match_df.sort_values('Your Rank')
-                        st.dataframe(match_df, hide_index=True)
-                        
-                        # Show voter's other highly ranked movies not in user's list
-                        voter_all_picks = voter_movie_matrix.loc[voter]
-                        voter_all_picks = voter_all_picks[voter_all_picks > 0].sort_values()
-                        
-                        other_movies = [m for m in voter_all_picks.index if m not in user_picks]
-                        if other_movies:
-                            st.markdown("**Their other top movies you might like:**")
-                            for movie in other_movies[:5]:  # Show top 5
-                                rank = int(voter_all_picks[movie])
-                                st.write(f"#{rank}: {movie}")
+                        # Show which movies matched and their rankings
+                        if common_movies:
+                            match_df = []
+                            for movie in common_movies:
+                                user_rank = user_picks[movie]
+                                voter_rank = int(voter_movie_matrix.loc[voter, movie])
+                                match_df.append({
+                                    'Movie': movie,
+                                    'Your Rank': user_rank,
+                                    'Their Rank': voter_rank,
+                                    'Difference': abs(user_rank - voter_rank)
+                                })
+                            
+                            match_df = pd.DataFrame(match_df)
+                            match_df = match_df.sort_values('Your Rank')
+                            st.dataframe(match_df, hide_index=True)
+                            
+                            # Show voter's other highly ranked movies not in user's list
+                            voter_all_picks = voter_movie_matrix.loc[voter]
+                            voter_all_picks = voter_all_picks[voter_all_picks > 0].sort_values()
+                            
+                            other_movies = [m for m in voter_all_picks.index if m not in user_picks]
+                            if other_movies:
+                                st.markdown("**Their other top movies you might like:**")
+                                for movie in other_movies[:5]:  # Show top 5
+                                    rank = int(voter_all_picks[movie])
+                                    st.write(f"#{rank}: {movie}")
     
     else:
         remaining = 10 - len(st.session_state.selected_movies)
