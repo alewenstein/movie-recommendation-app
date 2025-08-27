@@ -93,7 +93,7 @@ def find_similar_voters(user_picks: Dict[str, int], voter_movie_matrix: pd.DataF
 
 # Main app
 st.title("🎬 Find Your Movie Match")
-st.markdown("Select and rank 10 movies to find NYT reviewers with similar taste!")
+st.markdown("Select and rank movies to find NYT reviewers with similar taste!")
 
 # Load data
 try:
@@ -110,12 +110,13 @@ if 'selected_movies' not in st.session_state:
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.subheader("Select Your Top 10 Movies")
+    st.subheader("Select Your Movies")
     
     # Movie selection
     available_movies = [m for m in unique_movies if m not in st.session_state.selected_movies]
     
-    if len(st.session_state.selected_movies) < 10:
+    max_movies = 20  # Allow up to 20 movies instead of exactly 10
+    if len(st.session_state.selected_movies) < max_movies:
         # Tab selection for input method
         tab1, tab2 = st.tabs(["Select from List", "Enter Custom Movie"])
         
@@ -181,7 +182,7 @@ with col1:
 with col2:
     st.subheader("Your Movie Matches")
     
-    if len(st.session_state.selected_movies) == 10:
+    if len(st.session_state.selected_movies) >= 1:
         # Create user picks dictionary
         user_picks = {movie: rank+1 for rank, movie in enumerate(st.session_state.selected_movies)}
         
@@ -236,21 +237,21 @@ with col2:
                                     st.write(f"#{rank}: {movie}")
     
     else:
-        remaining = 10 - len(st.session_state.selected_movies)
-        st.info(f"Please select {remaining} more movie{'s' if remaining > 1 else ''} to find your matches!")
+        st.info("Add at least 1 movie to your list to find similar reviewers!")
         
         # Show some stats about the dataset
         st.markdown("### About the Dataset")
         st.write(f"- **Total Reviewers:** {len(voter_movie_matrix)}")
         st.write(f"- **Total Movies:** {len(unique_movies)}")
         st.write(f"- **Most voters ranked:** 10 movies")
+        st.write(f"- **You can select:** 1-{max_movies} movies for matching")
 
 # Add footer with instructions
 st.markdown("---")
 st.markdown("""
 ### How it works:
-1. Select movies from the dropdown in order of preference (1st = favorite)
-2. Add exactly 10 movies to your list
+1. Select movies from the dropdown or enter custom titles in order of preference (1st = favorite)
+2. Add movies to your list (results update automatically)
 3. The app will find NYT reviewers with similar taste based on:
    - Which movies you both ranked
    - How similarly you ranked them
